@@ -1,13 +1,8 @@
 package org.mavai.sttbench.contract;
 
-import static org.mavai.punit.api.criterion.Criteria.empirical;
-import static org.mavai.punit.api.criterion.Criteria.of;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.function.Supplier;
 import org.mavai.outcome.Outcome;
 import org.mavai.punit.api.Expected;
+import org.mavai.punit.api.Sampling;
 import org.mavai.punit.api.ServiceContract;
 import org.mavai.punit.api.TokenTracker;
 import org.mavai.punit.api.covariate.Covariate;
@@ -16,8 +11,18 @@ import org.mavai.punit.api.criterion.Criteria;
 import org.mavai.punit.api.criterion.ValueMatcher;
 import org.mavai.sttbench.eval.TranscriptNormaliser;
 import org.mavai.sttbench.provider.SttProvider;
+import org.mavai.sttbench.provider.SttProviderFactory;
 import org.mavai.sttbench.provider.SttRequest;
 import org.mavai.sttbench.provider.SttResponse;
+
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Supplier;
+
+import static org.mavai.punit.api.criterion.Criteria.empirical;
+import static org.mavai.punit.api.criterion.Criteria.of;
 
 /**
  * The predefined PUnit service contract for Speech-to-Text benchmarking.
@@ -81,13 +86,31 @@ import org.mavai.sttbench.provider.SttResponse;
  * WER/CER/Token-F1 columns (judged by nothing, observed for the report) is the
  * companion Hackergarten task on the reporting side.
  */
-public final class SttServiceContract
-        implements ServiceContract<SttProvider, SttServiceContract.AudioSample, String> {
+public final class SttServiceContract implements ServiceContract<SttProviderFactory.ProviderId, SttServiceContract.AudioSample, String> {
 
     private final SttProvider provider;
 
-    public SttServiceContract(SttProvider provider) {
-        this.provider = Objects.requireNonNull(provider, "provider");
+    public SttServiceContract(SttProviderFactory.ProviderId providerId) {
+        this.provider = SttProviderFactory.create(providerId);
+    }
+
+    public static Sampling<SttProviderFactory.ProviderId, AudioSample, String> samplingAll() {
+        return sampling(List.of(
+                new AudioSample(
+                        new SttRequest(
+                                "aeon_001",
+                                "recipe1",
+                                Path.of("/home/niklas/IdeaProjects/mavai-stt-bench/src/main/resources/corpus/audio/aeon_001.m4a"),
+                                "en"),
+                        "Hello and welcome to the AEON world.")));
+    }
+
+    public static Sampling<SttProviderFactory.ProviderId, AudioSample, String> sampling(List<AudioSample> inputs) {
+        return samplingWith(inputs);
+    }
+
+    public static Sampling<SttProviderFactory.ProviderId, AudioSample, String> samplingWith(List<AudioSample> inputs) {
+        return Sampling.of(SttServiceContract::new, 1, inputs);
     }
 
     @Override
@@ -95,26 +118,20 @@ public final class SttServiceContract
         return of(
                 // Reference-free: needs only the produced transcript. A genuine
                 // Bernoulli — the provider either returned usable text or not.
-                empirical().<String>passRate()
-                        .name("non-empty-transcript")
-                        .satisfies("Transcript is non-empty", this::checkNonEmpty),
+                empirical().<String>passRate().name("non-empty-transcript").satisfies("Transcript is non-empty", this::checkNonEmpty),
 
                 // Reference-bearing: the framework supplies (expected, actual)
                 // from the sample's Expected#expected() and the invoke output.
                 // Exact match is the one accuracy outcome with a principled,
                 // un-guessed boundary (zero errors), so its pass rate is sound.
-                empirical().<String>passRate()
-                        .name("normalised-exact-match")
-                        .matchedBy(ExactMatcher::new));
+                empirical().<String>passRate().name("normalised-exact-match").matchedBy(ExactMatcher::new));
         // WER/CER/Token-F1 are deliberately absent: see the class javadoc. They
         // are observed as descriptive report columns, never judged here.
     }
 
 
     private Outcome<Void> checkNonEmpty(String transcript) {
-        return TranscriptNormaliser.normalise(transcript).isEmpty()
-                ? Outcome.fail("empty-transcript", "Provider returned an empty transcript")
-                : Outcome.ok();
+        return TranscriptNormaliser.normalise(transcript).isEmpty() ? Outcome.fail("empty-transcript", "Provider returned an empty transcript") : Outcome.ok();
     }
 
     @Override
@@ -177,11 +194,7 @@ public final class SttServiceContract
     private record ExactMatcher() implements ValueMatcher<String> {
         @Override
         public Outcome<Void> match(String expected, String actual) {
-            return TranscriptNormaliser.normalise(expected)
-                    .equals(TranscriptNormaliser.normalise(actual))
-                    ? Outcome.ok()
-                    : Outcome.fail("no-exact-match",
-                            "Normalised transcript does not match reference");
+            return TranscriptNormaliser.normalise(expected).equals(TranscriptNormaliser.normalise(actual)) ? Outcome.ok() : Outcome.fail("no-exact-match", "Normalised transcript does not match reference");
         }
     }
 
