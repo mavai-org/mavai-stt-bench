@@ -16,8 +16,8 @@ import org.mavai.punit.api.criterion.Criteria;
 import org.mavai.punit.api.criterion.ValueMatcher;
 import org.mavai.sttbench.eval.TranscriptNormaliser;
 import org.mavai.sttbench.provider.SttProvider;
-import org.mavai.sttbench.provider.SttRequest;
 import org.mavai.sttbench.provider.SttResponse;
+import org.mavai.sttbench.provider.noop.NoopSttProvider;
 
 /**
  * The predefined PUnit service contract for Speech-to-Text benchmarking.
@@ -82,12 +82,41 @@ import org.mavai.sttbench.provider.SttResponse;
  * companion Hackergarten task on the reporting side.
  */
 public final class SttServiceContract
-        implements ServiceContract<SttProvider, SttServiceContract.AudioSample, String> {
+        implements ServiceContract<String, AudioSample, String> {
 
     private final SttProvider provider;
 
-    public SttServiceContract(SttProvider provider) {
-        this.provider = Objects.requireNonNull(provider, "provider");
+    /**
+     * @param providerId the {@link SttProvider#id() id} of the provider under
+     *     benchmark — the {@code String} factor PUnit varies across the
+     *     explore grid. Resolved to a concrete provider by
+     *     {@link #resolveProvider(String)}.
+     */
+    public SttServiceContract(String providerId) {
+        this.provider = resolveProvider(Objects.requireNonNull(providerId, "providerId"));
+    }
+
+    // Resolves the provider-id factor to a concrete provider.
+    //
+    // EXTENSION POINT — provider discovery. Today only the bundled no-op
+    // provider is wired, looked up by its id(). Adding a provider should NOT
+    // mean editing this method: the intended open mechanism is runtime
+    // discovery — a ServiceLoader over SttProvider implementations (or provider
+    // factories) registered on the classpath and keyed by id() — so a fork can
+    // drop in a provider this harness has never heard of without touching the
+    // contract. Swap the fixed list below for the discovered set when that lands.
+    //
+    // An unknown id is a benchmark misconfiguration, not a sample failure, so it
+    // aborts the run with a thrown exception rather than travelling as an
+    // Outcome (see the Outcome convention in this module's conventions).
+    private static SttProvider resolveProvider(String providerId) {
+        List<SttProvider> available = List.of(new NoopSttProvider());
+        return available.stream()
+                .filter(p -> p.id().equals(providerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Unknown STT provider id '" + providerId + "'; available: "
+                                + available.stream().map(SttProvider::id).toList()));
     }
 
     @Override
@@ -136,33 +165,6 @@ public final class SttServiceContract
     public Outcome<String> invoke(AudioSample sample, TokenTracker tracker) {
         Outcome<SttResponse> response = provider.transcribe(sample.request());
         return response.map(SttResponse::transcript);
-    }
-
-    /**
-     * Per-sample input: the provider-facing {@link SttRequest} paired with the
-     * ground-truth reference transcript.
-     *
-     * <p>Implements {@link Expected}{@code <String>} so the framework routes
-     * {@link #expected()} to each reference-bearing criterion's
-     * {@link ValueMatcher} on every sample. The reference is exposed here but
-     * never passed to the provider — {@link #invoke} hands the provider only
-     * {@link #request()} — so a provider cannot read the answer it is judged
-     * against.
-     *
-     * @param request   the provider-facing request (clip, recipe, audio path)
-     * @param reference the ground-truth transcript read to record the clip
-     */
-    public record AudioSample(SttRequest request, String reference) implements Expected<String> {
-
-        public AudioSample {
-            Objects.requireNonNull(request, "request");
-            Objects.requireNonNull(reference, "reference");
-        }
-
-        @Override
-        public String expected() {
-            return reference;
-        }
     }
 
     // ── Value matcher: (expected reference, actual transcript) -> Outcome ──
